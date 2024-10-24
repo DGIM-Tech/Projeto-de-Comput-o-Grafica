@@ -4,14 +4,38 @@ import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.152.2/exampl
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 camera.position.set(0, 7,90); // ajusta a camera
-
 const renderer = new THREE.WebGLRenderer();
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;  // Ativa o sombreamento
+renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Tipo de sombra suave
 document.body.appendChild(renderer.domElement);
-const controls = new OrbitControls(camera, renderer.domElement); // Configura os controles para a câmera
-controls.enableDamping = true; // Ativa o amortecimento (suavização)
-controls.dampingFactor = 0.25; // Fator de suavização
-controls.enableZoom = true; // Habilita o zoom
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.25;
+controls.enableZoom = true;
+
+// Adicionando luz ambiente
+const light = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(light);
+
+// Luz direcional para sombras
+const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+directionalLight.position.set(50, 100, 50);  // Posição da luz no céu
+directionalLight.castShadow = true;  // Habilitar a emissão de sombras
+
+// Configuração de sombras da luz direcional
+directionalLight.shadow.mapSize.width = 1024;
+directionalLight.shadow.mapSize.height = 1024;
+directionalLight.shadow.camera.near = 0.5;
+directionalLight.shadow.camera.far = 500;
+directionalLight.shadow.camera.left = -150;
+directionalLight.shadow.camera.right = 150;
+directionalLight.shadow.camera.top = 100;
+directionalLight.shadow.camera.bottom = -100;
+
+scene.add(directionalLight);
+
 // variavel de movimentçao do carro
 let moveForward = false; // mover para frente
 let moveBackward = false; // mover para atras
@@ -58,6 +82,12 @@ class Carros{
             this.model.rotation.set(rotacion.x,rotacion.y, rotacion.z) // para totaciona o objeto
             this.model.position.set(initialPosition.x, initialPosition.y, initialPosition.z);
             this.model.scale.set(scale.x, scale.y, scale.z);
+            this.model.traverse((child) => {
+                if (child.isMesh) {
+                    child.castShadow = true; // Permitir que o carro emita sombra
+                    child.receiveShadow = true; // O carro recebe sombra
+                }
+            });
         }, undefined, (error) => {
             console.error('Erro ao carregar o modelo:', error);
         });
@@ -125,6 +155,31 @@ class Carros{
         const {ZMax, ZMin, XMax, XMin} = this.boundaries;
         return (z >= ZMin && z <= ZMax && x >= XMin && x <= XMax);
     }
+    detectFrontCollisionWithCars(carros) {
+        const carroBoundingBox = this.boundingBox;
+    
+        for (let i = 0; i < carros.length; i++) {
+            if (carros[i] !== this && carros[i].model) { // Não comparar o carro consigo mesmo
+                const otherCarBoundingBox = carros[i].boundingBox.setFromObject(carros[i].model);
+                
+                // Verificar se há colisão com a bounding box de outro carro
+                if (carroBoundingBox.intersectsBox(otherCarBoundingBox)) {
+                    // Agora, verificar se a colisão é frontal
+                    const directionToOtherCar = new THREE.Vector3().subVectors(carros[i].model.position, this.model.position).normalize();
+                    const forwardDirection = new THREE.Vector3(0, 0, 1).applyQuaternion(this.model.quaternion).normalize();
+                    
+                    // Se o ângulo entre a direção do movimento e a direção do outro carro for pequeno, é uma colisão frontal
+                    const angle = forwardDirection.angleTo(directionToOtherCar);
+                    const threshold = Math.PI / 4; // Ajuste o limite do ângulo para definir colisão frontal (45 graus)
+                    if (angle < threshold) {
+                        return true; // Colisão frontal detectada
+                    }
+                }
+            }
+        }
+    
+        return false; // Sem colisão frontal
+    }
     moveAutomatically() {
         // Verifica se o modelo foi carregado
         if (!this.model) {
@@ -132,7 +187,20 @@ class Carros{
             return; // Saia se o modelo ainda não estiver carregado
         }
     
-        // console.log("Caminho atual:", this.path);
+        // Checar se o carro está colidindo com outro carro na frente
+        if (this.detectFrontCollisionWithCars(carros)) {
+            this.inCollision = true; // Seta o estado de colisão para true
+        } else {
+            this.inCollision = false; // Se não houver colisão frontal, retorne ao estado normal
+        }
+    
+        // Se houver colisão frontal, o carro para de se mover
+        if (this.inCollision) {
+            console.log("Carro em colisão frontal, parando...");
+            return; // Impede o movimento enquanto está em colisão frontal
+        }
+    
+        // Movimentação automática continua se não houver colisão frontal
         if (!this.path.length) return; // Se path estiver vazio, não faz nada
     
         const target = this.path[this.currentPathIndex];
@@ -145,7 +213,7 @@ class Carros{
                 this.currentPathIndex = (this.currentPathIndex + 1) % this.path.length; // Muda para o próximo ponto
             } else {
                 // Move o carro em direção ao ponto alvo
-                this.model.position.add(direction.multiplyScalar(0.4)); // Aumente ou diminua a velocidade ajustando o fator
+                this.model.position.add(direction.multiplyScalar(0.4)); // Ajustar a velocidade
                 this.model.lookAt(target); // Faz o carro olhar para o ponto alvo
             }
         }
@@ -199,7 +267,11 @@ class Cenario{
             this.model.position.set(0, 0, 0); // ajsutando a posiçao do cenario no origem
             this.model.traverse((child) => {
                 if (child.isMesh) {
-                    this.collidableObjects.push(child); // Adicionar objetos colidíveis à lista
+                    child.castShadow = true;  // Ativa sombras
+                    child.receiveShadow = true;  // Ativa recebimento de sombras
+
+                    // Verifica se o objeto deve ser colidível
+                    this.collidableObjects.push(child);  // Adiciona o objeto à lista de colidíveis
                 }
             });
             // this.model.rotation.x = Math.PI / 2; // aplicando um rotçao de 90 grau no eixo x
@@ -226,6 +298,12 @@ class Aviao{
             console.log('Modelo carregado com sucesso!');
             this.model.position.set(0, 10, 0); // ajsutando a posiçao do cenario no origem
             this.model.scale.set(0.1,0.1,0.1);
+            this.model.traverse((child) => {
+                if (child.isMesh) {
+                    child.castShadow = true; // Avião emite sombras
+                    child.receiveShadow = true; // Avião recebe sombras
+                }
+            });
         }, undefined, (error) => {
             console.error('Erro ao carregar o modelo:', error);
         });
@@ -268,12 +346,12 @@ const aviao = new Aviao();
 
 const cenario = new Cenario()
 // Adicionando luz ambiente e direcional
-const light = new THREE.AmbientLight(0xffffff, 1);
-scene.add(light);
+// const light = new THREE.AmbientLight(0xffffff, 1);
+// scene.add(light);
 
-const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
-directionalLight.position.set(1, 1, 1).normalize();
-scene.add(directionalLight);
+// const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+// directionalLight.position.set(1, 1, 1).normalize();
+// scene.add(directionalLight);
 
 const carro1 = new Carros('modelo/carro2.glb', new THREE.Vector3(5, 2.3, 85), new THREE.Vector3(3, 3, 3), new THREE.Vector3(0, -3.15, 0));
 const carros = [carro1];
@@ -309,14 +387,42 @@ carro3.setPath([
     
 ]);
 carros.push(carro3);
+
+let timeOfDay = 0; // Controla o ciclo de dia e noite.
+
+
+// Definir valores para simular o ciclo de dia e noite
+const maxLightIntensity = 1;  // Intensidade máxima da luz (dia)
+const minLightIntensity = 0.1;  // Intensidade mínima da luz (noite)
+const dayDuration = Math.PI * 2;  // Um ciclo completo de dia-noite
+let ambientLightColor = new THREE.Color(0x666699); // Cor do céu (crepúsculo)
 function animate() {
     requestAnimationFrame(animate);
     // Mover apenas o carro selecionado
+      // Simular o ciclo de dia e noite
+      const normalizedTime = (Math.sin(timeOfDay) + 1) / 2;  // Normaliza para 0 a 1
+      light.intensity = minLightIntensity + (maxLightIntensity - minLightIntensity) * normalizedTime;
+      
+      // Mudar a cor do fundo para simular o céu mudando de cor
+      scene.background = new THREE.Color(
+          ambientLightColor.r * normalizedTime,
+          ambientLightColor.g * normalizedTime,
+          ambientLightColor.b * normalizedTime
+      );
     carros.forEach((carro, index) => {
         carro.moverCar(index, cenario);
     });
     aviao.moveForwardAutomatic();
     aviao.updatePosition();
+     // Atualizar a posição da luz direcional para simular o movimento do sol
+     timeOfDay += 0.003;  // Controle a velocidade da passagem do tempo aumentando ou diminuindo o valor
+     directionalLight.position.x = 100 * Math.cos(timeOfDay);  // Movimento circular no eixo X
+     directionalLight.position.z = 100 * Math.sin(timeOfDay);  // Movimento circular no eixo Z
+     directionalLight.position.y = 50 + 30 * Math.sin(timeOfDay); // Ajusta a altura para imitar o nascer e o pôr do sol
+     
+     // Garantir que a luz esteja sempre olhando para o centro da cena
+     directionalLight.target.position.set(0, 0, 0);
+     directionalLight.target.updateMatrixWorld();
     renderer.render(scene, camera);
 }
 
